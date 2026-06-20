@@ -22,12 +22,10 @@ dist/
 *.egg-info/
 
 # Project data/artifacts
-data/
 datasets/
 outputs/
 results/
 runs/
-checkpoints/
 
 # Model weights / large binaries
 *.pt
