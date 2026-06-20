@@ -1,0 +1,36 @@
+# Python cache
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Virtual environments / installed libraries
+.venv/
+venv/
+env/
+ENV/
+Lib/
+Scripts/
+Include/
+pyvenv.cfg
+site-packages/
+dist-packages/
+
+# Packaging/build output
+build/
+dist/
+*.egg-info/
+
+# Project data/artifacts
+data/
+datasets/
+outputs/
+results/
+runs/
+checkpoints/
+
+# Model weights / large binaries
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.pkl
