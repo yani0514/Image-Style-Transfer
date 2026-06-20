@@ -4,6 +4,7 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Virtual environments / installed libraries
+ImStyle/
 .venv/
 venv/
 env/
