@@ -136,7 +136,7 @@ def command_evaluate(args: argparse.Namespace) -> None:
     output_path = ensure_parent(args.metrics_csv)
     frame.to_csv(output_path, index=False)
     ok_rows = frame[frame["status"] == "ok"] if "status" in frame.columns else frame
-    summary = ok_rows.describe(numeric_only=True)
+    summary = ok_rows.describe()
     summary_path = output_path.with_suffix(".summary.csv")
     summary.to_csv(summary_path)
     print(f"Saved {output_path}")

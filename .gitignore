@@ -29,7 +29,7 @@ runs/
 
 # Model weights / large binaries
 *.pt
-*.pth
+
 *.ckpt
 *.onnx
 *.pkl
