@@ -99,6 +99,7 @@ class TransformerStylizer(nn.Module):
         mixed = alpha * stylized + (1.0 - alpha) * content_features
 
         batch, channels, height, width = mixed.shape
+        # Spatial feature locations become tokens for global self-attention.
         tokens = mixed.flatten(2).transpose(1, 2)
         tokens = self.transformer(tokens)
         refined = tokens.transpose(1, 2).view(batch, channels, height, width)
@@ -108,10 +109,14 @@ class TransformerStylizer(nn.Module):
 def load_transformer_stylizer(
     checkpoint_path: str | Path,
     device: torch.device | str,
-    config: TransformerConfig = TransformerConfig(),
+    config: TransformerConfig | None = None,
 ) -> TransformerStylizer:
-    model = TransformerStylizer(config).to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device)
+    saved_config = checkpoint.get("metadata", {}).get("transformer_config") if isinstance(checkpoint, dict) else None
+    if config is None and saved_config:
+        config = TransformerConfig(**saved_config)
+    config = config or TransformerConfig()
+    model = TransformerStylizer(config).to(device)
     state_dict: dict[str, Any]
     if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
         state_dict = checkpoint["state_dict"]
@@ -119,8 +124,13 @@ def load_transformer_stylizer(
         state_dict = checkpoint["model"]
     else:
         state_dict = checkpoint
-    cleaned = {key.replace("module.", ""): value for key, value in state_dict.items()}
-    model.load_state_dict(cleaned, strict=False)
+    if not isinstance(state_dict, dict) or not all(isinstance(key, str) for key in state_dict):
+        raise ValueError(f"Invalid transformer checkpoint: {checkpoint_path}")
+    cleaned = {
+        key[len("module."):] if key.startswith("module.") else key: value
+        for key, value in state_dict.items()
+    }
+    model.load_state_dict(cleaned, strict=True)
     return model.eval()
 
 
@@ -131,12 +141,15 @@ def run_transformer(
     model: TransformerStylizer,
     alpha: float = 0.8,
 ) -> tuple[torch.Tensor, dict[str, object]]:
+    if content.is_cuda:
+        torch.cuda.synchronize(content.device)
     started_at = time.perf_counter()
     output = model(content, style, alpha=alpha)
+    if output.is_cuda:
+        torch.cuda.synchronize(output.device)
     metadata = {
         "method": "transformer",
         "runtime_seconds": time.perf_counter() - started_at,
         "config": asdict(model.config) | {"alpha": alpha},
     }
     return output, metadata
-

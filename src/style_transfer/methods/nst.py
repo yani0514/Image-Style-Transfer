@@ -45,6 +45,8 @@ def run_nst(
         raise ValueError("optimizer must be 'adam' or 'lbfgs'")
 
     history: list[dict[str, float]] = []
+    if content.is_cuda:
+        torch.cuda.synchronize(content.device)
     started_at = time.perf_counter()
 
     iterator = trange(config.steps, desc="NST", leave=False)
@@ -85,6 +87,8 @@ def run_nst(
         with torch.no_grad():
             generated.clamp_(0.0, 1.0)
 
+    if generated.is_cuda:
+        torch.cuda.synchronize(generated.device)
     metadata = {
         "method": "nst",
         "runtime_seconds": time.perf_counter() - started_at,
@@ -92,4 +96,3 @@ def run_nst(
         "history": history,
     }
     return generated.detach().clamp(0.0, 1.0), metadata
-

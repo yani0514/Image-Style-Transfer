@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from pathlib import Path
 
 import torch
@@ -52,8 +53,8 @@ def add_vgg_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--pretrained",
         choices=["auto", "yes", "no"],
-        default="auto",
-        help="How to load VGG19 features. Use yes for strict evaluation.",
+        default="yes",
+        help="Load ImageNet VGG19 weights (default: yes). 'no' is only for tests.",
     )
 
 
@@ -144,15 +145,30 @@ def command_evaluate(args: argparse.Namespace) -> None:
 
 
 def command_gallery(args: argparse.Namespace) -> None:
-    content_paths = list_images(args.content_dir, limit=args.content_limit)
-    style_paths = list_images(args.style_dir, limit=args.style_limit)
+    content_paths, style_paths = select_image_grid(
+        args.content_dir,
+        args.style_dir,
+        args.content_limit,
+        args.style_limit,
+        random_sample=True,
+        seed=args.seed,
+    )
     rows = []
+    missing_pairs = []
     for content_path in content_paths:
         row = []
         for style_path in style_paths:
             output_path = find_pair_output(args.output_dir, content_path.stem, style_path.stem)
+            if output_path is None:
+                missing_pairs.append(f"{content_path.stem} + {style_path.stem}")
             row.append(Image.open(output_path).convert("RGB") if output_path else None)
         rows.append(row)
+    if missing_pairs:
+        raise FileNotFoundError(
+            f"Gallery is missing {len(missing_pairs)} generated combinations in "
+            f"{args.output_dir}. Run batch generation with --random-sample "
+            f"--seed {args.seed} and the same limits first."
+        )
     gallery = make_labeled_grid(
         rows,
         row_labels=[path.stem for path in content_paths],
@@ -162,6 +178,31 @@ def command_gallery(args: argparse.Namespace) -> None:
     output_path = ensure_parent(args.gallery_path)
     gallery.save(output_path)
     print(f"Saved {output_path}")
+
+
+def select_image_grid(
+    content_dir: str | Path,
+    style_dir: str | Path,
+    content_limit: int | None,
+    style_limit: int | None,
+    random_sample: bool,
+    seed: int,
+) -> tuple[list[Path], list[Path]]:
+    """Select the content and style axes shared by generation and galleries."""
+    content_paths = list_images(content_dir)
+    style_paths = list_images(style_dir)
+    if not content_paths or not style_paths:
+        raise ValueError("Content and style directories must contain images.")
+    if random_sample:
+        rng = random.Random(seed)
+        content_count = min(content_limit or len(content_paths), len(content_paths))
+        style_count = min(style_limit or len(style_paths), len(style_paths))
+        content_paths = rng.sample(content_paths, content_count)
+        style_paths = rng.sample(style_paths, style_count)
+    else:
+        content_paths = content_paths[:content_limit]
+        style_paths = style_paths[:style_limit]
+    return content_paths, style_paths
 
 
 def command_ablation(args: argparse.Namespace) -> None:
@@ -195,6 +236,7 @@ def command_ablation(args: argparse.Namespace) -> None:
         filename = f"{content_stem}__{style_stem}__alpha{alpha:.1f}.png"
         output_path = output_dir / filename
         save_image(output, output_path)
+        write_metadata(output_path, metadata)
         records.append({"alpha": alpha, "output": str(output_path), **metadata})
 
     metadata_path = output_dir / "ablation_metadata.json"
@@ -205,8 +247,14 @@ def command_ablation(args: argparse.Namespace) -> None:
 
 def command_batch(args: argparse.Namespace) -> None:
     device = resolve_device(args.device)
-    content_paths = list_images(args.content_dir, limit=args.content_limit)
-    style_paths = list_images(args.style_dir, limit=args.style_limit)
+    content_paths, style_paths = select_image_grid(
+        args.content_dir,
+        args.style_dir,
+        args.content_limit,
+        args.style_limit,
+        random_sample=args.random_sample,
+        seed=args.seed,
+    )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -315,6 +363,9 @@ def command_train_adain_decoder(args: argparse.Namespace) -> None:
         resume_checkpoint=args.resume_checkpoint,
         content_limit=args.content_limit,
         style_limit=args.style_limit,
+        content_source=args.content_source,
+        coco_split=args.coco_split,
+        coco_dataset_dir=args.coco_dataset_dir,
     )
     metadata_path = Path(args.output_checkpoint).with_suffix(".json")
     with metadata_path.open("w", encoding="utf-8") as handle:
@@ -343,6 +394,9 @@ def command_train_transformer(args: argparse.Namespace) -> None:
         device=device,
         content_limit=args.content_limit,
         style_limit=args.style_limit,
+        content_source=args.content_source,
+        coco_split=args.coco_split,
+        coco_dataset_dir=args.coco_dataset_dir,
     )
     metadata_path = Path(args.output_checkpoint).with_suffix(".json")
     with metadata_path.open("w", encoding="utf-8") as handle:
@@ -352,7 +406,13 @@ def command_train_transformer(args: argparse.Namespace) -> None:
 
 
 def add_training_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--content-dir", required=True)
+    parser.add_argument(
+        "--content-source", choices=["coco", "local"], default="coco",
+        help="Content training data (default: COCO 2017 via FiftyOne).",
+    )
+    parser.add_argument("--content-dir", help="Required only with --content-source local.")
+    parser.add_argument("--coco-split", choices=["train", "validation", "test"], default="train")
+    parser.add_argument("--coco-dataset-dir", help="Optional FiftyOne COCO download directory.")
     parser.add_argument("--style-dir", required=True)
     parser.add_argument("--output-checkpoint", required=True)
     parser.add_argument("--image-size", type=int, default=256)
@@ -375,7 +435,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Image style transfer experiments.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    nst = subparsers.add_parser("nst", help="Run classic optimization-based NST.")
+    nst = subparsers.add_parser("nst", help="Run optimization-based NST.")
     add_common_image_args(nst)
     add_vgg_arg(nst)
     nst.add_argument("--steps", type=int, default=300)
@@ -420,8 +480,9 @@ def build_parser() -> argparse.ArgumentParser:
     gallery.add_argument("--style-dir", required=True)
     gallery.add_argument("--output-dir", required=True)
     gallery.add_argument("--gallery-path", required=True)
-    gallery.add_argument("--content-limit", type=int)
-    gallery.add_argument("--style-limit", type=int)
+    gallery.add_argument("--content-limit", type=int, default=5)
+    gallery.add_argument("--style-limit", type=int, default=5)
+    gallery.add_argument("--seed", type=int, default=42)
     gallery.add_argument("--cell-size", type=int, default=220)
     gallery.set_defaults(func=command_gallery)
 
@@ -447,6 +508,8 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--image-size", type=int, default=512)
     batch.add_argument("--content-limit", type=int)
     batch.add_argument("--style-limit", type=int)
+    batch.add_argument("--random-sample", action="store_true")
+    batch.add_argument("--seed", type=int, default=42)
     batch.add_argument("--device", default="auto")
     add_vgg_arg(batch)
     batch.add_argument("--alpha", type=float, default=0.8)

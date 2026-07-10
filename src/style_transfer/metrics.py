@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -7,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from .config import DEFAULT_CONTENT_LAYER, DEFAULT_STYLE_LAYERS
-from .io import find_pair_output, list_images, load_image
+from .io import list_images, load_image
 from .losses import feature_mean_std, gram_matrix
 from .vgg import VGGFeatureExtractor
 
@@ -26,6 +27,7 @@ def evaluate_tensors(
     content_features = extractor(content, (content_layer,))
     style_features = extractor(style, style_layers)
 
+    # All proxies use the same frozen VGG representation as the training losses.
     content_vgg_mse = F.mse_loss(
         output_features[content_layer],
         content_features[content_layer],
@@ -69,12 +71,15 @@ def evaluate_output_directory(
     if not style_paths:
         raise ValueError(f"No style images found in {style_dir}")
     rows: list[dict[str, object]] = []
+    output_root = Path(output_dir)
 
     for content_path in content_paths:
         content = load_image(content_path, image_size=image_size, device=device)
         for style_path in style_paths:
-            output_path = find_pair_output(output_dir, content_path.stem, style_path.stem)
-            if output_path is None:
+            output_paths = sorted(output_root.glob(f"{content_path.stem}__{style_path.stem}*.png"))
+            output_paths += sorted(output_root.glob(f"{content_path.stem}__{style_path.stem}*.jpg"))
+            output_paths += sorted(output_root.glob(f"{content_path.stem}__{style_path.stem}*.jpeg"))
+            if not output_paths:
                 rows.append({
                     "content": content_path.name,
                     "style": style_path.name,
@@ -82,23 +87,36 @@ def evaluate_output_directory(
                     "status": "missing",
                 })
                 continue
-
             style = load_image(style_path, image_size=image_size, device=device)
-            output = load_image(output_path, image_size=image_size, device=device)
-            metrics = evaluate_tensors(
-                output=output,
-                content=content,
-                style=style,
-                extractor=extractor,
-                content_layer=content_layer,
-                style_layers=style_layers,
-            )
-            rows.append({
-                "content": content_path.name,
-                "style": style_path.name,
-                "output": str(output_path),
-                "status": "ok",
-                **metrics,
-            })
+            for output_path in output_paths:
+                output = load_image(output_path, image_size=image_size, device=device)
+                metrics = evaluate_tensors(
+                    output=output,
+                    content=content,
+                    style=style,
+                    extractor=extractor,
+                    content_layer=content_layer,
+                    style_layers=style_layers,
+                )
+                metadata: dict[str, object] = {}
+                metadata_path = output_path.with_suffix(".json")
+                if metadata_path.exists():
+                    try:
+                        loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
+                        metadata = loaded if isinstance(loaded, dict) else {}
+                    except (json.JSONDecodeError, OSError):
+                        metadata = {}
+                config = metadata.get("config", {})
+                alpha = config.get("alpha") if isinstance(config, dict) else None
+                rows.append({
+                    "content": content_path.name,
+                    "style": style_path.name,
+                    "output": str(output_path),
+                    "status": "ok",
+                    "method": metadata.get("method"),
+                    "alpha": alpha,
+                    "runtime_seconds": metadata.get("runtime_seconds"),
+                    **metrics,
+                })
 
     return pd.DataFrame(rows)

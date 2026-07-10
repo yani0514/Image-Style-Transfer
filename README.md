@@ -1,12 +1,12 @@
 # Image Style Transfer
 
 This project implements a small, reproducible image style transfer system for
-comparing quality and efficiency across classic optimization-based neural style
-transfer, AdaIN arbitrary style transfer, and an optional transformer stylizer.
+comparing quality and efficiency across optimization-based neural style
+transfer, AdaIN arbitrary style transfer, and a transformer stylizer.
 
 ## What Is Included
 
-- Classic NST baseline using VGG content loss and Gram-matrix style loss.
+- NST baseline using VGG content loss and Gram-matrix style loss.
 - AdaIN arbitrary style transfer with a tunable strength value `alpha`.
 - AdaIN feature-inversion fallback for experiments without a trained decoder.
 - Optional lightweight transformer stylizer architecture for trained experiments.
@@ -20,7 +20,7 @@ transfer, AdaIN arbitrary style transfer, and an optional transformer stylizer.
 configs/
   eval_small.json              Example fixed evaluation protocol
 scripts/
-  run_nst.py                   Classic optimization baseline
+  run_nst.py                   NST baseline
   run_adain.py                 AdaIN transfer
   run_transformer.py           Transformer transfer
   run_batch.py                 Run one method over a content-style grid
@@ -38,9 +38,7 @@ src/style_transfer/
   methods/
     nst.py                     Optimization-based NST
     adain.py                   AdaIN and feature inversion
-    transformer.py             Optional transformer stylizer
-tests/
-  smoke_test.py                Lightweight tensor and image checks
+    transformer.py             Transformer stylizer
 ```
 
 ## Setup
@@ -49,13 +47,12 @@ Use Python 3.10 or newer.
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate
+source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-The first run with pretrained VGG features may download torchvision VGG19
-weights. For fully offline smoke checks, pass `--pretrained no`; quality metrics
-and meaningful style transfer should use pretrained VGG features.
+The first run downloads torchvision's pretrained VGG19 weights if they are not
+cached.
 
 ## Data
 
@@ -75,14 +72,14 @@ For the suggested evaluation protocol, use 20-50 content images and 5-10 style
 images. The default config resizes the shorter side to 512 px and center-crops to
 a fixed square for comparable metrics.
 
-## Classic NST Baseline
+## NST Baseline
 
 ```bash
-python scripts/run_nst.py ^
-  --content data/content/photo_001.jpg ^
-  --style data/styles/starry_night.jpg ^
-  --output outputs/nst/photo_001__starry_night.png ^
-  --image-size 512 ^
+python scripts/run_nst.py \
+  --content data/content/horses.png \
+  --style data/styles/Starry_Night_Van_Gogh.jpg \
+  --output outputs/nst/horses_Starry_Night_Van_Gogh_nst.png \
+  --image-size 512 \
   --steps 300
 ```
 
@@ -92,13 +89,13 @@ single content-style pair.
 To run NST over a fixed evaluation grid:
 
 ```bash
-python scripts/run_batch.py ^
-  --method nst ^
-  --content-dir data/content ^
-  --style-dir data/styles ^
-  --output-dir outputs/nst ^
-  --content-limit 20 ^
-  --style-limit 5 ^
+python scripts/run_batch.py \
+  --method nst \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/nst \
+  --content-limit 20 \
+  --style-limit 5 \
   --steps 300
 ```
 
@@ -106,107 +103,184 @@ python scripts/run_batch.py ^
 
 Fast feed-forward AdaIN requires a trained decoder checkpoint:
 
-```bash
-python scripts/run_adain.py ^
-  --content data/content/photo_001.jpg ^
-  --style data/styles/starry_night.jpg ^
-  --output outputs/adain/photo_001__starry_night.png ^
-  --decoder-checkpoint checkpoints/adain_decoder.pth ^
-  --alpha 0.8
-```
-
 Without a decoder checkpoint, the command uses AdaIN feature inversion by
 default. This still uses the AdaIN target feature statistics and strength knob,
 but reconstructs the image by iterative optimization:
 
 ```bash
-python scripts/run_adain.py ^
-  --content data/content/photo_001.jpg ^
-  --style data/styles/starry_night.jpg ^
-  --output outputs/adain_inversion/photo_001__starry_night.png ^
-  --alpha 0.8 ^
-  --mode inversion ^
+python scripts/run_adain.py \
+  --content data/content/horses.png \
+  --style data/styles/Starry_Night_Van_Gogh.jpg \
+  --output outputs/adain_inversion/horses_Starry_Night_Van_Gogh_adain_inv.png \
+  --alpha 0.8 \
+  --mode inversion \
   --inversion-steps 200
 ```
 
-Train the provided decoder on your own content/style folders:
+Train the decoder with COCO 2017 content downloaded through FiftyOne's COCO
+utility (the default) and the artwork folder. This path does not require a
+MongoDB service or a registered FiftyOne dataset. `--content-limit` is useful for an initial
+pipeline check; omit it for the complete 118,287-image training split. The full
+split requires substantial disk space and download time.
+
+Downloads created by older versions under `~/fiftyone/coco-2017` are detected
+and reused automatically, including downloads that completed before a MongoDB
+startup error.
+
+First verify the pipeline with a small subset:
 
 ```bash
-python scripts/train_adain_decoder.py ^
-  --content-dir data/content ^
-  --style-dir data/styles ^
-  --output-checkpoint checkpoints/adain_decoder.pth ^
-  --image-size 256 ^
-  --batch-size 4 ^
-  --steps 20000
+python scripts/train_adain_decoder.py \
+  --style-dir data/styles \
+  --output-checkpoint checkpoints/adain_decoder_test.pth \
+  --coco-dataset-dir data/coco \
+  --content-limit 500 \
+  --steps 100
 ```
+
+```bash
+python scripts/run_adain.py \
+  --content data/content/horses.png \
+  --style data/styles/Starry_Night_Van_Gogh.jpg \
+  --output outputs/adain/horses_Starry_Night_Van_Gogh_adain.png \
+  --decoder-checkpoint checkpoints/adain_decoder_test.pth \
+  --alpha 0.8
+```
+
+Then train on the full split:
+
+```bash
+python scripts/train_adain_decoder.py \
+  --style-dir data/styles \
+  --output-checkpoint checkpoints/adain_decoder.pth \
+  --coco-dataset-dir data/coco \
+  --image-size 256 \
+  --batch-size 4 \
+  --steps 10000
+```
+
+```bash
+python scripts/run_adain.py \
+  --content data/content/horses.png \
+  --style data/styles/Starry_Night_Van_Gogh.jpg \
+  --output outputs/adain/horses_Starry_Night_Van_Gogh_adain.png \
+  --decoder-checkpoint checkpoints/adain_decoder.pth \
+  --alpha 0.8
+```
+
+
 
 Then generate a full evaluation grid:
 
 ```bash
-python scripts/run_batch.py ^
-  --method adain ^
-  --content-dir data/content ^
-  --style-dir data/styles ^
-  --output-dir outputs/adain ^
-  --decoder-checkpoint checkpoints/adain_decoder.pth ^
+python scripts/run_batch.py \
+  --method adain \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/adain \
+  --decoder-checkpoint checkpoints/adain_decoder.pth \
   --alpha 0.8
 ```
 
 ## Transformer Stylizer
 
-The transformer model is included for compute-available experiments. It must be
-trained or loaded from a checkpoint before qualitative use:
+The transformer model must be trained or loaded from a checkpoint before qualitative use:
 
 ```bash
-python scripts/run_transformer.py ^
-  --content data/content/photo_001.jpg ^
-  --style data/styles/starry_night.jpg ^
-  --output outputs/transformer/photo_001__starry_night.png ^
+python scripts/run_transformer.py \
+  --content data/content/horses.png \
+  --style data/styles/Starry_Night_Van_Gogh.jpg \
+  --output outputs/transformer/horses_Starry_Night_Van_Gogh_transf.png \
   --checkpoint checkpoints/transformer_stylizer.pth
 ```
 
-Train it with the same perceptual objective:
+Train it with the same COCO content pipeline and perceptual objective:
 
 ```bash
-python scripts/train_transformer.py ^
-  --content-dir data/content ^
-  --style-dir data/styles ^
-  --output-checkpoint checkpoints/transformer_stylizer.pth ^
-  --image-size 256 ^
-  --batch-size 4 ^
-  --steps 20000
+python scripts/train_transformer.py \
+  --style-dir data/styles \
+  --output-checkpoint checkpoints/transformer_stylizer.pth \
+  --coco-dataset-dir data/coco \
+  --image-size 256 \
+  --batch-size 4 \
+  --steps 10000
 ```
 
-## Strength Ablation
-
-```bash
-python scripts/run_ablation.py ^
-  --content data/content/photo_001.jpg ^
-  --style data/styles/starry_night.jpg ^
-  --output-dir outputs/ablation/photo_001__starry_night ^
-  --alphas 0.2 0.5 0.8 1.0
-```
-
-This creates one image per alpha value and a small JSON metadata file with
-runtime information.
+To deliberately train either feed-forward model on a local content collection,
+pass `--content-source local --content-dir path/to/images`.
 
 ## Evaluation
 
-Generate outputs with names containing both content and style stems, for example:
+Batch generation creates output names containing both the content and style
+stems. Evaluate each method in its own output directory.
 
-```text
-outputs/adain/photo_001__starry_night__alpha0.8.png
+### AdaIN evaluation
+
+```bash
+python scripts/run_batch.py \
+  --method adain \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/gallery_adain \
+  --decoder-checkpoint checkpoints/adain_decoder.pth \
+  --content-limit 20 \
+  --style-limit 5 \
+  --random-sample \
+  --seed 42 \
+  --alpha 0.8
 ```
 
 Then run:
 
 ```bash
-python scripts/evaluate.py ^
-  --content-dir data/content ^
-  --style-dir data/styles ^
-  --output-dir outputs/adain ^
+python scripts/evaluate.py \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/adain \
   --metrics-csv outputs/adain_metrics.csv
+```
+
+### NST evaluation
+
+```bash
+python scripts/run_batch.py \
+  --method nst \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/nst \
+  --content-limit 20 \
+  --style-limit 5 \
+  --steps 300
+
+python scripts/evaluate.py \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/nst \
+  --content-limit 20 \
+  --style-limit 5 \
+  --metrics-csv outputs/nst_metrics.csv
+```
+
+### Transformer evaluation
+
+```bash
+python scripts/run_batch.py \
+  --method transformer \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/transformer \
+  --checkpoint checkpoints/transformer_stylizer.pth \
+  --content-limit 20 \
+  --style-limit 5 \
+  --alpha 0.8
+
+python scripts/evaluate.py \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/transformer \
+  --content-limit 20 \
+  --style-limit 5 \
+  --metrics-csv outputs/transformer_metrics.csv
 ```
 
 Metrics:
@@ -214,26 +288,95 @@ Metrics:
 - `content_vgg_mse`: VGG feature distance between output and content.
 - `style_gram_mse`: Gram-matrix distance between output and style.
 - `style_stats_mse`: feature mean/std distance between output and style.
+- `runtime_seconds`: synchronized per-pair inference time read from each output's
+  JSON metadata, alongside `method` and `alpha`.
+
+Evaluation emits one row for every matching output (including every alpha or
+method variant) rather than silently selecting the first filename match.
 
 Lower values indicate closer preservation or matching for the corresponding
 proxy. These are proxies, not human preference scores.
 
 ## Gallery
 
+Each gallery uses the same seeded random sample during batch generation and
+layout, producing all 25 combinations of five content and five style images.
+
+### AdaIN gallery
+
 ```bash
-python scripts/make_gallery.py ^
-  --content-dir data/content ^
-  --style-dir data/styles ^
-  --output-dir outputs/adain ^
+python scripts/run_batch.py \
+  --method adain \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/gallery_adain \
+  --decoder-checkpoint checkpoints/adain_decoder.pth \
+  --content-limit 5 \
+  --style-limit 5 \
+  --random-sample \
+  --seed 42 \
+  --alpha 0.8
+
+python scripts/make_gallery.py \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/gallery_adain \
+  --seed 42 \
   --gallery-path outputs/adain_gallery.jpg
 ```
 
-The gallery aligns content images as rows and styles as columns. Missing outputs
-are left blank, which makes incomplete experiments easy to spot.
+### NST gallery
+
+```bash
+python scripts/run_batch.py \
+  --method nst \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/gallery_nst \
+  --content-limit 5 \
+  --style-limit 5 \
+  --random-sample \
+  --seed 42 \
+  --steps 300
+
+python scripts/make_gallery.py \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/gallery_nst \
+  --seed 42 \
+  --gallery-path outputs/nst_gallery.jpg
+```
+
+### Transformer gallery
+
+```bash
+python scripts/run_batch.py \
+  --method transformer \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/gallery_transformer \
+  --checkpoint checkpoints/transformer_stylizer.pth \
+  --content-limit 5 \
+  --style-limit 5 \
+  --random-sample \
+  --seed 42 \
+  --alpha 0.8
+
+python scripts/make_gallery.py \
+  --content-dir data/content \
+  --style-dir data/styles \
+  --output-dir outputs/gallery_transformer \
+  --seed 42 \
+  --gallery-path outputs/transformer_gallery.jpg
+```
+
+Change `--seed` in both commands of a pair to select another reproducible 5×5
+sample. Gallery creation now fails clearly if any of the selected combinations
+has not been generated.
 
 ## Notes On Analysis
 
-When reporting results, compare:
+Results compare:
 
 - Runtime per image pair for NST, AdaIN decoder, AdaIN inversion, and transformer.
 - Content preservation against style matching metrics.

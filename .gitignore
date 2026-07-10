@@ -5,6 +5,7 @@ __pycache__/
 
 # Virtual environments / installed libraries
 ImStyle/
+im_style_venv/
 .venv/
 venv/
 env/

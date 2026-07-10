@@ -19,6 +19,7 @@ def adaptive_instance_normalization(
     content_features: torch.Tensor,
     style_features: torch.Tensor,
 ) -> torch.Tensor:
+    # Preserve normalized content structure while adopting style statistics.
     content_mean, content_std = feature_mean_std(content_features)
     style_mean, style_std = feature_mean_std(style_features)
     normalized = (content_features - content_mean) / content_std
@@ -79,11 +80,16 @@ def load_adain_decoder(
         state_dict = checkpoint["decoder"]
     else:
         state_dict = checkpoint
-    cleaned = {
-        key.replace("module.", "").replace("decoder.", ""): value
-        for key, value in state_dict.items()
-    }
-    decoder.load_state_dict(cleaned, strict=False)
+    if not isinstance(state_dict, dict) or not all(isinstance(key, str) for key in state_dict):
+        raise ValueError(f"Invalid AdaIN decoder checkpoint: {checkpoint_path}")
+    cleaned = {}
+    for key, value in state_dict.items():
+        if key.startswith("module."):
+            key = key[len("module."):]
+        if key.startswith("decoder."):
+            key = key[len("decoder."):]
+        cleaned[key] = value
+    decoder.load_state_dict(cleaned, strict=True)
     return decoder.eval()
 
 
@@ -95,12 +101,17 @@ def run_adain_decoder(
     decoder: AdaINDecoder,
     config: AdaINConfig,
 ) -> tuple[torch.Tensor, dict[str, object]]:
+    if content.is_cuda:
+        torch.cuda.synchronize(content.device)
     started_at = time.perf_counter()
     content_features = extractor(content, (config.layer,))[config.layer]
     style_features = extractor(style, (config.layer,))[config.layer]
     target_features = adaptive_instance_normalization(content_features, style_features)
+    # Alpha interpolates between content features and the fully stylized target.
     target_features = config.alpha * target_features + (1.0 - config.alpha) * content_features
     output = decoder(target_features).clamp(0.0, 1.0)
+    if output.is_cuda:
+        torch.cuda.synchronize(output.device)
     metadata = {
         "method": "adain_decoder",
         "runtime_seconds": time.perf_counter() - started_at,
@@ -124,6 +135,8 @@ def run_adain_inversion(
     generated = content.clone().requires_grad_(True)
     optimizer = torch.optim.Adam([generated], lr=config.inversion_learning_rate)
     history: list[dict[str, float]] = []
+    if content.is_cuda:
+        torch.cuda.synchronize(content.device)
     started_at = time.perf_counter()
 
     iterator = trange(config.inversion_steps, desc="AdaIN inversion", leave=False)
@@ -150,6 +163,8 @@ def run_adain_inversion(
             history.append(row)
             iterator.set_postfix(loss=f"{row['loss']:.3f}")
 
+    if generated.is_cuda:
+        torch.cuda.synchronize(generated.device)
     metadata = {
         "method": "adain_inversion",
         "runtime_seconds": time.perf_counter() - started_at,
@@ -157,4 +172,3 @@ def run_adain_inversion(
         "history": history,
     }
     return generated.detach().clamp(0.0, 1.0), metadata
-

@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from tqdm import trange
 
 from .config import DEFAULT_CONTENT_LAYER, DEFAULT_STYLE_LAYERS
-from .data import ImageFolderDataset, cycling_batches
+from .data import ImageFolderDataset, ImagePathDataset, cycling_batches, load_coco_paths
 from .losses import feature_statistics_loss, total_variation_loss
 from .methods.adain import (
     AdaINDecoder,
@@ -36,13 +36,26 @@ class TrainConfig:
 
 
 def make_loaders(
-    content_dir: str | Path,
+    content_dir: str | Path | None,
     style_dir: str | Path,
     config: TrainConfig,
     content_limit: int | None = None,
     style_limit: int | None = None,
+    content_source: str = "coco",
+    coco_split: str = "train",
+    coco_dataset_dir: str | Path | None = None,
 ) -> tuple[DataLoader[torch.Tensor], DataLoader[torch.Tensor]]:
-    content_dataset = ImageFolderDataset(content_dir, image_size=config.image_size, limit=content_limit)
+    if content_source == "coco":
+        content_dataset = ImagePathDataset(
+            load_coco_paths(coco_split, content_limit, coco_dataset_dir),
+            image_size=config.image_size,
+        )
+    elif content_source == "local":
+        if content_dir is None:
+            raise ValueError("--content-source local requires --content-dir")
+        content_dataset = ImageFolderDataset(content_dir, image_size=config.image_size, limit=content_limit)
+    else:
+        raise ValueError(f"Unknown content source: {content_source}")
     style_dataset = ImageFolderDataset(style_dir, image_size=config.image_size, limit=style_limit)
     content_loader = DataLoader(
         content_dataset,
@@ -83,7 +96,7 @@ def save_checkpoint(
 
 
 def train_adain_decoder(
-    content_dir: str | Path,
+    content_dir: str | Path | None,
     style_dir: str | Path,
     extractor: VGGFeatureExtractor,
     output_checkpoint: str | Path,
@@ -92,6 +105,9 @@ def train_adain_decoder(
     resume_checkpoint: str | Path | None = None,
     content_limit: int | None = None,
     style_limit: int | None = None,
+    content_source: str = "coco",
+    coco_split: str = "train",
+    coco_dataset_dir: str | Path | None = None,
 ) -> dict[str, object]:
     content_loader, style_loader = make_loaders(
         content_dir,
@@ -99,6 +115,9 @@ def train_adain_decoder(
         config,
         content_limit=content_limit,
         style_limit=style_limit,
+        content_source=content_source,
+        coco_split=coco_split,
+        coco_dataset_dir=coco_dataset_dir,
     )
     content_batches = cycling_batches(content_loader)
     style_batches = cycling_batches(style_loader)
@@ -111,12 +130,22 @@ def train_adain_decoder(
     optimizer = torch.optim.Adam(decoder.parameters(), lr=config.learning_rate)
     all_layers = tuple(dict.fromkeys(("relu4_1", *DEFAULT_STYLE_LAYERS)))
     history: list[dict[str, float]] = []
+    training_data = {
+        "content_source": content_source,
+        "content_dir": str(content_dir) if content_dir is not None else None,
+        "content_limit": content_limit,
+        "style_dir": str(style_dir),
+        "style_limit": style_limit,
+        "coco_split": coco_split if content_source == "coco" else None,
+    }
     started_at = time.perf_counter()
 
     iterator = trange(1, config.steps + 1, desc="Train AdaIN decoder", leave=False)
     for step in iterator:
         content = next(content_batches).to(device)
         style = next(style_batches).to(device)
+        batch_size = min(content.shape[0], style.shape[0])
+        content, style = content[:batch_size], style[:batch_size]
 
         with torch.no_grad():
             content_features = extractor(content, ("relu4_1",))["relu4_1"]
@@ -126,6 +155,7 @@ def train_adain_decoder(
 
         output = decoder(target_features).clamp(0.0, 1.0)
         output_features = extractor(output, all_layers)
+        # The decoder reconstructs the AdaIN target while matching style statistics.
         c_loss = F.mse_loss(output_features["relu4_1"], target_features)
         s_loss = feature_statistics_loss(
             {layer: output_features[layer] for layer in DEFAULT_STYLE_LAYERS},
@@ -159,7 +189,10 @@ def train_adain_decoder(
                 decoder,
                 optimizer,
                 step,
-                metadata={"method": "adain_decoder", "config": asdict(config)},
+                metadata={
+                    "method": "adain_decoder", "config": asdict(config),
+                    "training_data": training_data,
+                },
             )
 
     save_checkpoint(
@@ -167,7 +200,10 @@ def train_adain_decoder(
         decoder,
         optimizer,
         config.steps,
-        metadata={"method": "adain_decoder", "config": asdict(config)},
+        metadata={
+            "method": "adain_decoder", "config": asdict(config),
+            "training_data": training_data,
+        },
     )
     return {
         "method": "train_adain_decoder",
@@ -175,11 +211,12 @@ def train_adain_decoder(
         "checkpoint": str(output_checkpoint),
         "config": asdict(config),
         "history": history,
+        "training_data": training_data,
     }
 
 
 def train_transformer_stylizer(
-    content_dir: str | Path,
+    content_dir: str | Path | None,
     style_dir: str | Path,
     extractor: VGGFeatureExtractor,
     output_checkpoint: str | Path,
@@ -188,6 +225,9 @@ def train_transformer_stylizer(
     device: torch.device | str,
     content_limit: int | None = None,
     style_limit: int | None = None,
+    content_source: str = "coco",
+    coco_split: str = "train",
+    coco_dataset_dir: str | Path | None = None,
 ) -> dict[str, object]:
     content_loader, style_loader = make_loaders(
         content_dir,
@@ -195,6 +235,9 @@ def train_transformer_stylizer(
         train_config,
         content_limit=content_limit,
         style_limit=style_limit,
+        content_source=content_source,
+        coco_split=coco_split,
+        coco_dataset_dir=coco_dataset_dir,
     )
     content_batches = cycling_batches(content_loader)
     style_batches = cycling_batches(style_loader)
@@ -202,12 +245,22 @@ def train_transformer_stylizer(
     optimizer = torch.optim.Adam(model.parameters(), lr=train_config.learning_rate)
     all_layers = tuple(dict.fromkeys((DEFAULT_CONTENT_LAYER, *DEFAULT_STYLE_LAYERS)))
     history: list[dict[str, float]] = []
+    training_data = {
+        "content_source": content_source,
+        "content_dir": str(content_dir) if content_dir is not None else None,
+        "content_limit": content_limit,
+        "style_dir": str(style_dir),
+        "style_limit": style_limit,
+        "coco_split": coco_split if content_source == "coco" else None,
+    }
     started_at = time.perf_counter()
 
     iterator = trange(1, train_config.steps + 1, desc="Train transformer", leave=False)
     for step in iterator:
         content = next(content_batches).to(device)
         style = next(style_batches).to(device)
+        batch_size = min(content.shape[0], style.shape[0])
+        content, style = content[:batch_size], style[:batch_size]
 
         with torch.no_grad():
             content_target = extractor(content, (DEFAULT_CONTENT_LAYER,))[DEFAULT_CONTENT_LAYER]
@@ -215,6 +268,7 @@ def train_transformer_stylizer(
 
         output = model(content, style, alpha=transformer_config.alpha)
         output_features = extractor(output, all_layers)
+        # Perceptual content and style terms train without paired target images.
         c_loss = F.mse_loss(output_features[DEFAULT_CONTENT_LAYER], content_target)
         s_loss = feature_statistics_loss(
             {layer: output_features[layer] for layer in DEFAULT_STYLE_LAYERS},
@@ -252,6 +306,7 @@ def train_transformer_stylizer(
                     "method": "transformer",
                     "train_config": asdict(train_config),
                     "transformer_config": asdict(transformer_config),
+                    "training_data": training_data,
                 },
             )
 
@@ -264,6 +319,7 @@ def train_transformer_stylizer(
             "method": "transformer",
             "train_config": asdict(train_config),
             "transformer_config": asdict(transformer_config),
+            "training_data": training_data,
         },
     )
     return {
@@ -273,4 +329,5 @@ def train_transformer_stylizer(
         "train_config": asdict(train_config),
         "transformer_config": asdict(transformer_config),
         "history": history,
+        "training_data": training_data,
     }

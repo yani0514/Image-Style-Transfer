@@ -5,4 +5,5 @@ numpy>=1.26
 tqdm>=4.66
 pandas>=2.0
 matplotlib>=3.8
+fiftyone>=1.0
 directory-tree==1.0.0

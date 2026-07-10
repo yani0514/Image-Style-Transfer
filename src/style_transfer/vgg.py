@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import warnings
 from collections.abc import Sequence
 
 import torch
@@ -50,6 +49,7 @@ class VGGFeatureExtractor(nn.Module):
     ) -> dict[str, torch.Tensor]:
         required = set(layers or self.default_layers)
         if self.normalize:
+            # Torchvision VGG19 expects ImageNet-normalized RGB inputs.
             image = (image - self.mean) / self.std
         outputs: dict[str, torch.Tensor] = {}
         x = image
@@ -79,17 +79,11 @@ def _load_torchvision_vgg19(pretrained: str) -> nn.Sequential:
         weights = models.VGG19_Weights.IMAGENET1K_V1
         return models.vgg19(weights=weights).features
     except Exception as exc:
-        if pretrained == "yes":
-            raise RuntimeError(
-                "Unable to load pretrained VGG19 weights. Install torchvision "
-                "with model weights available or use --pretrained no for smoke tests."
-            ) from exc
-        warnings.warn(
-            "Falling back to randomly initialized VGG19 features because pretrained "
-            f"weights could not be loaded: {exc}",
-            RuntimeWarning,
-        )
-        return models.vgg19(weights=None).features
+        raise RuntimeError(
+            "Unable to load pretrained VGG19 weights. Style transfer training and "
+            "evaluation require ImageNet weights. Download/cache the torchvision "
+            "weights, or explicitly use --pretrained no only for architecture tests."
+        ) from exc
 
 
 def build_vgg_extractor(
@@ -104,4 +98,3 @@ def build_vgg_extractor(
     if device is not None:
         extractor = extractor.to(device)
     return extractor.eval()
-
